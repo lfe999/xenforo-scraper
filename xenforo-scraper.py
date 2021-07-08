@@ -20,9 +20,12 @@ parser.add_argument('-nd', '--no-directories', help="Do not create directories f
 parser.add_argument('-cn', '--continue', help="Skip threads that already have folders for them.", dest="cont",
                     action="store_true")
 parser.add_argument('-p', '--pdf', help="Print pages into PDF.", action="store_true")
+parser.add_argument('-j', '--json', help="Print pages into JSON format.", action="store_true")
 parser.add_argument('-ni', '--no-images', help="Don't download images.", action="store_true")
 parser.add_argument('-nv', '--no-videos', help="Don't download videos.", action="store_true")
+parser.add_argument('-nm', '--no-media', help="Don't download media.", action="store_true")
 parser.add_argument('-d', '--debug', help=argparse.SUPPRESS, action="store_true")
+parser.add_argument('-s', '--start', type=int, default=1)
 args = parser.parse_args()
 
 cookies = {'cookie': args.cookie}
@@ -46,6 +49,12 @@ else:
 # Import and prepare cookies for PDF printing.
 if args.pdf:
     import pdfkit
+
+if args.json:
+    import json
+    from urlextract import URLExtract
+
+if args.pdf or args.json:
     cookielist = []
     if args.cookie:
         from http.cookies import SimpleCookie
@@ -175,15 +184,16 @@ def scrapepage(url):
                     files.append(src)
 
     # Media
-    attachmenttags = soup.find_all(href=True)
-    for element in attachmenttags:
-        src = element['href']
-        if not src.startswith('http'):
-            src = base_url + src
-        if "media/" in src and src + "full/" not in files:
-            files.append(src + "full/")
-        if "attachments/" in src and "/upload" not in src and src not in files:
-            files.append(src)
+    if not args.no_media:
+        attachmenttags = soup.find_all(href=True)
+        for element in attachmenttags:
+            src = element['href']
+            if not src.startswith('http'):
+                src = base_url + src
+            if "media/" in src and src + "full/" not in files:
+                files.append(src + "full/")
+            if "attachments/" in src and "/upload" not in src and src not in files:
+                files.append(src)
 
     if args.debug:
         print(files)
@@ -211,6 +221,45 @@ def scrapepage(url):
             'page-width': '300mm',
             'encoding': 'UTF-8'
         })
+
+    if args.json:
+        extractor = URLExtract()
+        pagenumber = url[url.rfind('page'):len(url)]
+        articletags = soup.find_all("article", class_="message")
+        jsonfilepath = os.path.join(path, "%s.json" % pagenumber)
+
+        # clear the file if it is the first page
+        if args.debug:
+            print("page number is: " + pagenumber)
+        if pagenumber == "page-1":
+            with open(jsonfilepath, 'a') as file:
+                file.truncate(0)
+        
+        for element in articletags:
+            postid = element["id"]
+            author = element["data-author"]
+            bodyelement = element.find("article", class_="message-body")
+            body = bodyelement.text
+            datetime = element.find("time", class_="u-dt")["datetime"]
+            urls = extractor.find_urls(body)
+            for link in bodyelement.findAll('a', attrs={'href': re.compile("^https?://")}):
+                urls.append(link['href'])
+            # if args.debug:
+            #     print(element)
+            article = {
+                'id': postid,
+                'author': author,
+                'datetime': datetime,
+                'links': urls,
+                'text': body
+            }
+            if args.debug:
+                print(json.dumps(article))
+
+            with open(jsonfilepath, 'a') as file:
+                file.write(json.dumps(article))
+                file.write("\n")
+
 
     # Handle download and saving of the files in files list.
     for count, i in enumerate(files, start=1):
@@ -309,6 +358,8 @@ def main():
         # Getting pages all for this single thread.
         print("\x1b[KThread: {0}".format(title))
         for pagecount, page in enumerate(pages, start=1):
+            if pagecount < int(args.start):
+                continue
             print(f"\x1b[KProgress: Page {pagecount}/{len(pages)}", end="\r")
             scrapepage(args.url + "page-" + str(pagecount))
 
